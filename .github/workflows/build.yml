@@ -1,4 +1,4 @@
-name: Build and Release Windows Only
+name: Build and Release Windows Simple
 
 on:
   push:
@@ -43,121 +43,69 @@ jobs:
       shell: powershell
       continue-on-error: true
 
-    - name: Build executable with PyInstaller
+    - name: List PNG files
       run: |
-        # Используем zmb.py как главный файл
-        $MAIN_FILE = "zmb.py"
-        
-        if (-not (Test-Path $MAIN_FILE)) {
-          Write-Host "File zmb.py not found!"
-          Write-Host "Current directory contents:"
-          Get-ChildItem -Force
-          exit 1
-        }
-        
-        Write-Host "Using main file: $MAIN_FILE"
-        
-        # Проверим наличие PNG файлов
+        Write-Host "Checking for PNG files:"
         $pngFiles = Get-ChildItem -Path "*.png"
         Write-Host "Found PNG files: $($pngFiles.Count)"
         foreach ($file in $pngFiles) {
-          Write-Host "  - $($file.Name)"
+          Write-Host "  - $($file.Name) ($([math]::Round($file.Length / 1KB, 1)) KB)"
+        }
+      shell: powershell
+
+    - name: Build executable with PyInstaller
+      run: |
+        Write-Host "Building executable..."
+        
+        # Простая команда PyInstaller с явным указанием каждого PNG файла
+        $pngFiles = Get-ChildItem -Path "*.png"
+        $addDataArgs = @()
+        
+        foreach ($file in $pngFiles) {
+          $addDataArgs += "--add-data"
+          $addDataArgs += "$($file.Name);."
         }
         
-        # Создаем spec файл для более точного контроля
-        $specContent = @"
-# -*- mode: python ; coding: utf-8 -*-
-
-import os
-
-block_cipher = None
-
-# Список всех PNG файлов
-png_files = []
-for png_file in os.listdir('.'):
-    if png_file.endswith('.png'):
-        png_files.append((png_file, '.'))
-
-a = Analysis(
-    ['zmb.py'],
-    pathex=[],
-    binaries=[],
-    datas=png_files,
-    hiddenimports=[
-        'pyautogui',
-        'keyboard',
-        'PIL',
-        'PIL.Image',
-        'cv2',
-        'numpy',
-    ],
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
-    noarchive=False,
-)
-
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
-
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name='dls-zmb-bot',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=True,
-    disable_windowed_traceback=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
-"@
-        
-        # Сохраняем spec файл
-        $specContent | Out-File -FilePath "zmb.spec" -Encoding UTF8
-        
-        Write-Host "Created zmb.spec file"
-        
-        # Собираем используя spec файл
-        Write-Host "Building using spec file..."
-        pyinstaller zmb.spec
-        
-        # Проверим результат сборки
-        if (Test-Path "dist\dls-zmb-bot.exe") {
-          Write-Host "Build successful! EXE file created."
-          $exeInfo = Get-Item "dist\dls-zmb-bot.exe"
-          Write-Host "EXE file size: $([math]::Round($exeInfo.Length / 1MB, 2)) MB"
+        if ($addDataArgs.Count -gt 0) {
+          Write-Host "Including $($pngFiles.Count) PNG files in the executable"
+          & pyinstaller --onefile --console --name "dls-zmb-bot" --distpath "dist" --workpath "build" --specpath "." $addDataArgs "zmb.py"
         } else {
-          Write-Host "Build failed! EXE file not created."
-          Write-Host "Checking for any exe files in dist:"
+          Write-Host "No PNG files found, building without images"
+          & pyinstaller --onefile --console --name "dls-zmb-bot" --distpath "dist" --workpath "build" --specpath "." "zmb.py"
+        }
+        
+        # Проверим результат
+        if (Test-Path "dist\dls-zmb-bot.exe") {
+          $exeInfo = Get-Item "dist\dls-zmb-bot.exe"
+          Write-Host "✅ Build successful!"
+          Write-Host "📦 EXE file size: $([math]::Round($exeInfo.Length / 1MB, 2)) MB"
+          Write-Host "📁 Location: $($exeInfo.FullName)"
+        } else {
+          Write-Host "❌ Build failed! No EXE file found."
           if (Test-Path "dist") {
-            Get-ChildItem -Path dist\ -Filter "*.exe" -Recurse
+            Write-Host "Contents of dist folder:"
+            Get-ChildItem -Path "dist" -Recurse
           }
           exit 1
         }
       shell: powershell
 
-    - name: List dist directory
+    - name: Test executable (quick check)
       run: |
-        Write-Host "Contents of dist directory:"
-        if (Test-Path "dist") {
-          Get-ChildItem -Path dist\ -Force -Recurse
-        } else {
-          Write-Host "dist directory does not exist!"
+        Write-Host "Testing executable..."
+        if (Test-Path "dist\dls-zmb-bot.exe") {
+          # Запускаем на 2 секунды с таймаутом, чтобы проверить что не падает сразу
+          $process = Start-Process -FilePath "dist\dls-zmb-bot.exe" -PassThru -NoNewWindow
+          Start-Sleep -Seconds 2
+          if (-not $process.HasExited) {
+            Write-Host "✅ Executable starts correctly"
+            Stop-Process -Id $process.Id -Force
+          } else {
+            Write-Host "⚠️ Executable exited immediately (exit code: $($process.ExitCode))"
+          }
         }
       shell: powershell
+      continue-on-error: true
 
     - name: Upload artifacts (for every build)
       uses: actions/upload-artifact@v4
@@ -172,21 +120,15 @@ exe = EXE(
       run: |
         New-Item -ItemType Directory -Force -Path release-assets | Out-Null
         
-        # Найти и скопировать exe файл для релиза
-        $exeFile = Get-ChildItem -Path dist\ -Filter "*.exe" | Select-Object -First 1
-        if ($exeFile) {
-          Copy-Item $exeFile.FullName "release-assets\dls-zmb-bot.exe"
-          Write-Host "Exe file prepared for release: $($exeFile.Name)"
-          Write-Host "Final file size: $([math]::Round((Get-Item $exeFile.FullName).Length / 1MB, 2)) MB"
+        if (Test-Path "dist\dls-zmb-bot.exe") {
+          Copy-Item "dist\dls-zmb-bot.exe" "release-assets\dls-zmb-bot.exe"
+          $exeInfo = Get-Item "release-assets\dls-zmb-bot.exe"
+          Write-Host "✅ Release file prepared: dls-zmb-bot.exe"
+          Write-Host "📦 Size: $([math]::Round($exeInfo.Length / 1MB, 2)) MB"
         } else {
-          Write-Host "EXE file not found in dist!"
-          Write-Host "Contents of dist folder:"
-          Get-ChildItem -Path dist\ -Force -Recurse
+          Write-Host "❌ No EXE file to prepare for release!"
           exit 1
         }
-        
-        Write-Host "Contents of release-assets:"
-        Get-ChildItem -Path release-assets\ -Force
       shell: powershell
 
     - name: Create Release (only for tags)
@@ -198,28 +140,34 @@ exe = EXE(
         prerelease: false
         generate_release_notes: true
         body: |
-          ## Автоматический релиз dls-zmb-bot для Windows
+          ## 🧟‍♂️ DLS Zombie Bot - Автоматический релиз
           
           ### 📥 Скачать:
           - **Windows**: `dls-zmb-bot.exe`
           
-          ### 🚀 Установка и запуск:
-          
+          ### 🚀 Быстрый старт:
           1. Скачайте `dls-zmb-bot.exe`
-          2. Запустите двойным кликом или через командную строку
-          3. Откройте игру в полноэкранном режиме
-          4. Используйте клавишу **P** для паузы/возобновления
+          2. Запустите двойным кликом
+          3. Откройте игру Doomsday: Last Survivors в полноэкранном режиме
+          4. Бот автоматически начнет поиск и атаку зомби
+          
+          ### 🎮 Управление:
+          - **P** - Пауза/Возобновление работы бота
+          - **Ctrl+C** - Остановка бота
           
           ### ⚙️ Системные требования:
           - Windows 10/11
           - Разрешение экрана 1920x1080 (рекомендуется)
           - Игра в полноэкранном режиме
           
-          ### 🎮 Управление:
-          - **P** - Пауза/Возобновление
-          - **Ctrl+C** - Остановка бота
+          ### 🔧 Возможности:
+          - Автоматический поиск свободных лагерей
+          - Выбор типа зомби для атаки
+          - Адаптивный алгоритм смены уровня при отсутствии целей
+          - Автоматическое использование усилений
+          - Закрытие всплывающих окон и рекламы
           
           ---
-          *Автоматически собрано с помощью GitHub Actions*
+          *🤖 Собрано автоматически с помощью GitHub Actions*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

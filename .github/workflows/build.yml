@@ -8,131 +8,120 @@ on:
   pull_request:
     branches: [ main, master ]
 
-# Добавляем права для GitHub Actions
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  # Сборка всегда выполняется
+  build:
     runs-on: windows-latest
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Python 3.11
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller
-        pip install -r requirements.txt
-
-    - name: Check PNG files
-      run: |
-        Write-Host "Checking for PNG files:"
-        $pngFiles = Get-ChildItem -Path "*.png" -ErrorAction SilentlyContinue
-        if ($pngFiles) {
-          Write-Host "Found $($pngFiles.Count) PNG files:"
-          foreach ($file in $pngFiles) {
-            Write-Host "  - $($file.Name)"
-          }
-        } else {
-          Write-Host "No PNG files found"
-        }
-      shell: powershell
+        pip install pyinstaller pyautogui keyboard pillow opencv-python numpy
 
     - name: Build executable
       run: |
         Write-Host "Building executable..."
-        
         $pngFiles = Get-ChildItem -Path "*.png" -ErrorAction SilentlyContinue
-        $addDataArgs = @()
-        
         if ($pngFiles) {
+          Write-Host "Found $($pngFiles.Count) PNG files"
+          $addData = @()
           foreach ($file in $pngFiles) {
-            $addDataArgs += "--add-data"
-            $addDataArgs += "$($file.Name);."
+            $addData += "--add-data"
+            $addData += "$($file.Name);."
           }
-          Write-Host "Including $($pngFiles.Count) PNG files"
+          pyinstaller --onefile --console --name "dls-zmb-bot" @addData "zmb.py"
         } else {
-          Write-Host "Building without PNG files"
+          Write-Host "No PNG files found"
+          pyinstaller --onefile --console --name "dls-zmb-bot" "zmb.py"
         }
         
-        $allArgs = @("--onefile", "--console", "--name", "dls-zmb-bot", "--distpath", "dist", "--workpath", "build", "--specpath", ".") + $addDataArgs + @("zmb.py")
-        
-        & pyinstaller $allArgs
-        
         if (Test-Path "dist\dls-zmb-bot.exe") {
-          $exeInfo = Get-Item "dist\dls-zmb-bot.exe"
+          $fileInfo = Get-Item "dist\dls-zmb-bot.exe"
           Write-Host "Build successful!"
-          Write-Host "File size: $([math]::Round($exeInfo.Length / 1MB, 2)) MB"
+          Write-Host "File size: $([math]::Round($fileInfo.Length / 1MB, 2)) MB"
         } else {
-          Write-Host "Build failed!"
+          Write-Host "Build failed"
           exit 1
         }
       shell: powershell
 
-    - name: Upload artifacts
+    - name: Upload build artifacts (always)
       uses: actions/upload-artifact@v4
       with:
         name: dls-zmb-bot-${{ github.run_number }}
-        path: dist/
+        path: dist/dls-zmb-bot.exe
         retention-days: 90
 
-    - name: Prepare release
-      if: startsWith(github.ref, 'refs/tags/v')
-      run: |
-        mkdir release-assets
-        if (Test-Path "dist\dls-zmb-bot.exe") {
-          Copy-Item "dist\dls-zmb-bot.exe" "release-assets\dls-zmb-bot.exe"
-          Write-Host "Release file ready"
-        } else {
-          Write-Host "No EXE file found"
-          exit 1
-        }
-      shell: powershell
+  # Релиз только для тегов, использует артефакт из предыдущего job
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
 
-    - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/v')
-      uses: softprops/action-gh-release@v2
+    steps:
+    - name: Download build artifact
+      uses: actions/download-artifact@v4
       with:
-        files: release-assets/*
-        draft: false
-        prerelease: false
-        generate_release_notes: true
+        name: dls-zmb-bot-${{ github.run_number }}
+        path: ./
+
+    - name: Verify downloaded file
+      run: |
+        ls -la
+        if [ -f "dls-zmb-bot.exe" ]; then
+          echo "File found: dls-zmb-bot.exe"
+          echo "Size: $(du -h dls-zmb-bot.exe | cut -f1)"
+          file dls-zmb-bot.exe
+        else
+          echo "File not found!"
+          exit 1
+        fi
+
+    - name: Create Release (Linux environment)
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dls-zmb-bot.exe
+        name: "DLS Zombie Bot ${{ github.ref_name }}"
         body: |
-          ## DLS Zombie Bot - Release ${{ github.ref_name }}
+          ## 🧟‍♂️ DLS Zombie Bot ${{ github.ref_name }}
           
-          ### Download:
+          ### 📥 Download:
           - **Windows**: `dls-zmb-bot.exe`
           
-          ### Quick Start:
+          ### 🚀 Quick Start:
           1. Download `dls-zmb-bot.exe`
           2. Run the executable
           3. Open Doomsday: Last Survivors in fullscreen mode
           4. The bot will automatically start hunting zombies
           
-          ### Controls:
+          ### 🎮 Controls:
           - **P** - Pause/Resume bot
           - **Ctrl+C** - Stop bot
           
-          ### System Requirements:
+          ### ⚙️ System Requirements:
           - Windows 10/11
           - Screen resolution 1920x1080 (recommended)
           - Game in fullscreen mode
           
-          ### Features:
-          - Automatic camp search
-          - Zombie type selection
+          ### 🔧 Features:
+          - Automatic camp search and zombie selection
           - Adaptive level switching when no targets found
-          - Automatic use of boosts
+          - Automatic use of boosts and items
           - Auto-close popups and ads
           
           ---
-          *Built automatically with GitHub Actions*
+          *🤖 Built automatically with GitHub Actions*
+        draft: false
+        prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        

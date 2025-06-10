@@ -1,4 +1,4 @@
-name: Build and Release Windows Simple
+name: Build and Release
 
 on:
   push:
@@ -20,118 +20,78 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Cache pip dependencies
-      uses: actions/cache@v4
-      with:
-        path: ~\AppData\Local\pip\Cache
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
-
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
         pip install -r requirements.txt
 
-    - name: Run tests (если есть)
-      run: |
-        if (Test-Path "pytest.ini") -or (Test-Path "setup.cfg") -or (Test-Path "tests") {
-          pip install pytest
-          pytest
-        }
-      shell: powershell
-      continue-on-error: true
-
-    - name: List PNG files
+    - name: Check PNG files
       run: |
         Write-Host "Checking for PNG files:"
-        $pngFiles = Get-ChildItem -Path "*.png"
-        Write-Host "Found PNG files: $($pngFiles.Count)"
-        foreach ($file in $pngFiles) {
-          Write-Host "  - $($file.Name) ($([math]::Round($file.Length / 1KB, 1)) KB)"
+        $pngFiles = Get-ChildItem -Path "*.png" -ErrorAction SilentlyContinue
+        if ($pngFiles) {
+          Write-Host "Found $($pngFiles.Count) PNG files:"
+          foreach ($file in $pngFiles) {
+            Write-Host "  - $($file.Name)"
+          }
+        } else {
+          Write-Host "No PNG files found"
         }
       shell: powershell
 
-    - name: Build executable with PyInstaller
+    - name: Build executable
       run: |
         Write-Host "Building executable..."
         
-        # Простая команда PyInstaller с явным указанием каждого PNG файла
-        $pngFiles = Get-ChildItem -Path "*.png"
+        $pngFiles = Get-ChildItem -Path "*.png" -ErrorAction SilentlyContinue
         $addDataArgs = @()
         
-        foreach ($file in $pngFiles) {
-          $addDataArgs += "--add-data"
-          $addDataArgs += "$($file.Name);."
-        }
-        
-        if ($addDataArgs.Count -gt 0) {
-          Write-Host "Including $($pngFiles.Count) PNG files in the executable"
-          & pyinstaller --onefile --console --name "dls-zmb-bot" --distpath "dist" --workpath "build" --specpath "." $addDataArgs "zmb.py"
+        if ($pngFiles) {
+          foreach ($file in $pngFiles) {
+            $addDataArgs += "--add-data"
+            $addDataArgs += "$($file.Name);."
+          }
+          Write-Host "Including $($pngFiles.Count) PNG files"
         } else {
-          Write-Host "No PNG files found, building without images"
-          & pyinstaller --onefile --console --name "dls-zmb-bot" --distpath "dist" --workpath "build" --specpath "." "zmb.py"
+          Write-Host "Building without PNG files"
         }
         
-        # Проверим результат
+        $allArgs = @("--onefile", "--console", "--name", "dls-zmb-bot", "--distpath", "dist", "--workpath", "build", "--specpath", ".") + $addDataArgs + @("zmb.py")
+        
+        & pyinstaller $allArgs
+        
         if (Test-Path "dist\dls-zmb-bot.exe") {
           $exeInfo = Get-Item "dist\dls-zmb-bot.exe"
-          Write-Host "✅ Build successful!"
-          Write-Host "📦 EXE file size: $([math]::Round($exeInfo.Length / 1MB, 2)) MB"
-          Write-Host "📁 Location: $($exeInfo.FullName)"
+          Write-Host "Build successful!"
+          Write-Host "File size: $([math]::Round($exeInfo.Length / 1MB, 2)) MB"
         } else {
-          Write-Host "❌ Build failed! No EXE file found."
-          if (Test-Path "dist") {
-            Write-Host "Contents of dist folder:"
-            Get-ChildItem -Path "dist" -Recurse
-          }
+          Write-Host "Build failed!"
           exit 1
         }
       shell: powershell
 
-    - name: Test executable (quick check)
-      run: |
-        Write-Host "Testing executable..."
-        if (Test-Path "dist\dls-zmb-bot.exe") {
-          # Запускаем на 2 секунды с таймаутом, чтобы проверить что не падает сразу
-          $process = Start-Process -FilePath "dist\dls-zmb-bot.exe" -PassThru -NoNewWindow
-          Start-Sleep -Seconds 2
-          if (-not $process.HasExited) {
-            Write-Host "✅ Executable starts correctly"
-            Stop-Process -Id $process.Id -Force
-          } else {
-            Write-Host "⚠️ Executable exited immediately (exit code: $($process.ExitCode))"
-          }
-        }
-      shell: powershell
-      continue-on-error: true
-
-    - name: Upload artifacts (for every build)
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: dls-zmb-bot-build-${{ github.run_number }}
+        name: dls-zmb-bot-${{ github.run_number }}
         path: dist/
         retention-days: 90
 
-    # Release only when tag is pushed
-    - name: Prepare release (only for tags)
+    - name: Prepare release
       if: startsWith(github.ref, 'refs/tags/v')
       run: |
-        New-Item -ItemType Directory -Force -Path release-assets | Out-Null
-        
+        mkdir release-assets
         if (Test-Path "dist\dls-zmb-bot.exe") {
           Copy-Item "dist\dls-zmb-bot.exe" "release-assets\dls-zmb-bot.exe"
-          $exeInfo = Get-Item "release-assets\dls-zmb-bot.exe"
-          Write-Host "✅ Release file prepared: dls-zmb-bot.exe"
-          Write-Host "📦 Size: $([math]::Round($exeInfo.Length / 1MB, 2)) MB"
+          Write-Host "Release file ready"
         } else {
-          Write-Host "❌ No EXE file to prepare for release!"
+          Write-Host "No EXE file found"
           exit 1
         }
       shell: powershell
 
-    - name: Create Release (only for tags)
+    - name: Create Release
       if: startsWith(github.ref, 'refs/tags/v')
       uses: softprops/action-gh-release@v1
       with:
@@ -140,34 +100,34 @@ jobs:
         prerelease: false
         generate_release_notes: true
         body: |
-          ## 🧟‍♂️ DLS Zombie Bot - Автоматический релиз
+          ## DLS Zombie Bot - Release
           
-          ### 📥 Скачать:
+          ### Download:
           - **Windows**: `dls-zmb-bot.exe`
           
-          ### 🚀 Быстрый старт:
-          1. Скачайте `dls-zmb-bot.exe`
-          2. Запустите двойным кликом
-          3. Откройте игру Doomsday: Last Survivors в полноэкранном режиме
-          4. Бот автоматически начнет поиск и атаку зомби
+          ### Quick Start:
+          1. Download `dls-zmb-bot.exe`
+          2. Run the executable
+          3. Open Doomsday: Last Survivors in fullscreen mode
+          4. The bot will automatically start hunting zombies
           
-          ### 🎮 Управление:
-          - **P** - Пауза/Возобновление работы бота
-          - **Ctrl+C** - Остановка бота
+          ### Controls:
+          - **P** - Pause/Resume bot
+          - **Ctrl+C** - Stop bot
           
-          ### ⚙️ Системные требования:
+          ### System Requirements:
           - Windows 10/11
-          - Разрешение экрана 1920x1080 (рекомендуется)
-          - Игра в полноэкранном режиме
+          - Screen resolution 1920x1080 (recommended)
+          - Game in fullscreen mode
           
-          ### 🔧 Возможности:
-          - Автоматический поиск свободных лагерей
-          - Выбор типа зомби для атаки
-          - Адаптивный алгоритм смены уровня при отсутствии целей
-          - Автоматическое использование усилений
-          - Закрытие всплывающих окон и рекламы
+          ### Features:
+          - Automatic camp search
+          - Zombie type selection
+          - Adaptive level switching when no targets found
+          - Automatic use of boosts
+          - Auto-close popups and ads
           
           ---
-          *🤖 Собрано автоматически с помощью GitHub Actions*
+          *Built automatically with GitHub Actions*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

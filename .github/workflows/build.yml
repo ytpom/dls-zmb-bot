@@ -1,0 +1,145 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~\AppData\Local\pip\Cache
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install -r requirements.txt
+
+    - name: Run tests (если есть)
+      run: |
+        if (Test-Path "pytest.ini") -or (Test-Path "setup.cfg") -or (Test-Path "tests") {
+          pip install pytest
+          pytest
+        }
+      shell: powershell
+      continue-on-error: true
+
+    - name: Build executable with PyInstaller
+      run: |
+        # Используем zmb.py как главный файл
+        $MAIN_FILE = "zmb.py"
+        
+        if (-not (Test-Path $MAIN_FILE)) {
+          Write-Host "Файл zmb.py не найден!"
+          exit 1
+        }
+        
+        Write-Host "Используется файл: $MAIN_FILE"
+        
+        # Создать исполняемый файл с включением изображений
+        pyinstaller --onefile `
+                   --name "dls-zmb-bot.exe" `
+                   --distpath dist `
+                   --workpath build `
+                   --specpath . `
+                   --add-data "*.png;." `
+                   --console `
+                   --icon=icon.ico `
+                   $MAIN_FILE
+      shell: powershell
+
+    - name: List dist directory
+      run: Get-ChildItem -Path dist\ -Force
+      shell: powershell
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: dls-zmb-bot-windows-python${{ matrix.python-version }}
+        path: dist/
+        retention-days: 90
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: artifacts/
+
+    - name: Display structure of downloaded files
+      run: ls -R artifacts/
+
+    - name: Prepare release assets
+      run: |
+        New-Item -ItemType Directory -Force -Path release-assets
+        
+        # Найти и скопировать exe файл для релиза
+        $exeFile = Get-ChildItem -Path artifacts\ -Filter "*.exe" -Recurse | Select-Object -First 1
+        if ($exeFile) {
+          Copy-Item $exeFile.FullName "release-assets\dls-zmb-bot.exe"
+        }
+        
+        Get-ChildItem -Path release-assets\ -Force
+      shell: powershell
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: release-assets/*
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+        body: |
+          ## Автоматический релиз dls-zmb-bot для Windows
+          
+          ### 📥 Скачать:
+          - **Windows**: `dls-zmb-bot.exe`
+          
+          ### 🚀 Установка и запуск:
+          
+          1. Скачайте `dls-zmb-bot.exe`
+          2. Запустите двойным кликом или через командную строку
+          3. Откройте игру в полноэкранном режиме
+          4. Используйте клавишу **P** для паузы/возобновления
+          
+          ### ⚙️ Системные требования:
+          - Windows 10/11
+          - Разрешение экрана 1920x1080 (рекомендуется)
+          - Игра в полноэкранном режиме
+          
+          ### 🎮 Управление:
+          - **P** - Пауза/Возобновление
+          - **Ctrl+C** - Остановка бота
+          
+          ---
+          *Автоматически собрано с помощью GitHub Actions*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
